@@ -198,6 +198,58 @@ schema/扩展加载/vec 表维护在：
 
 - openclaw-epeshared/src/memory/embeddings.ts
 - openclaw-epeshared/src/memory/manager.ts
+
+---
+
+## Benchmarks：embedding 压力测试（3 个场景）
+
+下面这 3 个 benchmark 用来模拟你提到的高压场景：
+
+1) **高频对话**：大量小文本、频繁请求
+2) **长语音转录**：单条内容很长、需要切分成很多 chunk
+3) **群聊**：多参与者、消息交错、整体吞吐更高
+
+代码在（每个 benchmark 一个目录）：
+
+- openclaw-playground/embedding/bench-highfreq-chat/bench.ts
+- openclaw-playground/embedding/bench-long-transcript/bench.ts
+- openclaw-playground/embedding/bench-group-chat/bench.ts
+
+这三个脚本的生成/处理链路已升级为更接近 OpenClaw 实际索引：
+
+- 生成 session transcript JSONL（`type=message`）
+- 按 OpenClaw 的 session 提取逻辑 flatten 成 `User: ...` / `Assistant: ...` 的文本
+- 使用 OpenClaw 的 `chunkMarkdown(tokens, overlap)` 规则进行切分
+- 对 chunk 文本做 `embedBatch`（受 `batchSize` / `concurrency` 控制）
+
+并且已进一步推进到“全链路”形态：
+
+- 使用 SQLite 持久化 `chunks` 与 `embedding_cache`
+- 每次 sync 会先查 `embedding_cache`，命中则跳过 embedding，未命中才调用 provider
+- 通过 `deltaMessages` / `deltaBytes` 模拟 session-delta 的增量 sync 触发
+
+实现方式：由于 Node 20 没有内置 `node:sqlite`，且环境不保证存在 `sqlite3` CLI，这里用 Python 标准库 `sqlite3` 作为 SQLite 引擎（脚本会启动一个轻量 bridge 进程）。
+
+## 如何运行
+
+这些脚本默认用 `fake` embedder（不依赖任何 API key），你可以先用它做吞吐/并发/批大小的“压力形态”对比。
+
+从 monorepo 根目录运行（推荐）。本环境如果没有安装 `tsx`，可以用 `npx` 临时拉取：
+
+- `npx --yes tsx@4.21.0 openclaw-playground/embedding/bench-highfreq-chat/bench.ts --help`
+- `npx --yes tsx@4.21.0 openclaw-playground/embedding/bench-long-transcript/bench.ts --help`
+- `npx --yes tsx@4.21.0 openclaw-playground/embedding/bench-group-chat/bench.ts --help`
+
+如果你想跑真实 provider（例如 OpenAI），用：
+
+- `npx --yes tsx@4.21.0 openclaw-playground/embedding/bench-highfreq-chat/bench.ts --provider=openai --apiKeyEnv=OPENAI_API_KEY --model=text-embedding-3-small`
+
+说明：
+
+- `--concurrency` 和 `--batchSize` 会显著改变压力形态（QPS vs 单次 payload 大小）。
+- “增量 sync”相关：`--deltaMessages` / `--deltaBytes` 控制每次追加多少内容才触发一次索引。
+- “写库/缓存”相关：`--dbPath` / `--resetDb` 控制 SQLite 文件与是否在运行前清空；`--pruneMissing=1` 可模拟编辑导致的删除（append-only 场景一般不需要）。
+- 真实 provider 很可能触发 429/配额/超时，这正是你要观察的“压力边界”。
 - openclaw-epeshared/src/memory/manager-search.ts
 - openclaw-epeshared/src/memory/manager-embedding-ops.ts
 - openclaw-epeshared/src/memory/manager-sync-ops.ts
